@@ -1,0 +1,1 @@
+# notion-lifelog-sync
