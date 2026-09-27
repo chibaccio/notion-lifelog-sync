@@ -9,9 +9,43 @@ const CONFIG = {
   NOTION_VERSION: '2022-06-28'
 };
 
+/**
+ * 翌朝（午前5時）に前日の日記・ライフログをNotionへ同期する関数
+ */
+function syncYesterdayDiaryToNotion() {
+  const now = new Date();
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  const targetDateStr = Utilities.formatDate(yesterday, 'Asia/Tokyo', 'yyyy-MM-dd');
+  syncDiaryByDate(targetDateStr);
+}
+
+/**
+ * （手動実行・検証用）当日の日記・ライフログをNotionへ同期する関数
+ */
 function syncTodayDiaryToNotion() {
   const todayStr = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd');
   syncDiaryByDate(todayStr);
+}
+
+/**
+ * 翌朝5:00〜6:00に前日分を自動同期するトリガーを登録・更新する関数
+ * （実行すると古い同期トリガーを削除し、新しい朝5時トリガーを自動設定します）
+ */
+function setDailyMorningTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  for (const trigger of triggers) {
+    const handler = trigger.getHandlerFunction();
+    if (handler === 'syncYesterdayDiaryToNotion' || handler === 'syncTodayDiaryToNotion') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  }
+  ScriptApp.newTrigger('syncYesterdayDiaryToNotion')
+    .timeBased()
+    .atHour(5)
+    .everyDays(1)
+    .inTimezone('Asia/Tokyo')
+    .create();
+  Logger.log('翌朝5時（5:00〜6:00）に前日分（syncYesterdayDiaryToNotion）を実行するトリガーを設定しました。');
 }
 
 function syncDiaryByDate(targetDateStr) {
@@ -140,7 +174,7 @@ function parseDiaryMarkdown(mdText, dateStr, schema) {
   text = text.replace(/<line-break\s*\/?>/gi, '\n');
   
   // 2. エスケープされたマークダウン記号（\_、\*、\-、\#、\| 等）のアンエスケープ
-  text = text.replace(/\\([_*\-#`~|])/g, '$1');
+  text = text.replace(/\\([_*\\-#`~|])/g, '$1');
   text = text.replace(/^\uFEFF/, ''); // BOM除去
 
   // 3. ヘッダー / Front Matter 抽出（---, -----, または最初の見出し前の部分）
@@ -212,7 +246,7 @@ function parseDiaryMarkdown(mdText, dateStr, schema) {
         let clean = line.replace(/^(?:[-*・+]|[0-9]+[.)]|[①-⑩])\s*/, '');
         clean = clean.replace(/\[(.*?)\]\(.*?\)/g, '$1');
         clean = clean.replace(/\*\*(.*?)\*\*/g, '$1');
-        if (clean) lines.append ? lines.push(clean) : lines.push(clean);
+        if (clean) lines.push(clean);
       }
     }
     if (lines.length > 0) {
@@ -398,7 +432,31 @@ function saveSyncLog(dateStr, notionUrl, fileUrl) {
   const logDateFormatted = dateStr.replace(/-/g, '');
   const logFileName = `NOTION-SYNC-${logDateFormatted}.md`;
   const nowStr = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm:ss');
-  const content = `---\ntitle: Notion同期ログ (${dateStr})\ndate: ${dateStr}\nsynced_at: ${nowStr}\nstatus: success\nnotion_url: ${notionUrl}\n---\n\n# Notion同期ログ (${dateStr})\n\n## 実行サマリー\n\n| 項目 | 内容 |\n| :-: | :-: |\n| 同期対象日 | ${dateStr} |\n| 実行日時 | ${nowStr} |\n| ステータス | 成功 (success) |\n| Notion ページ | [${dateStr}](${notionUrl}) |\n\n## 処理詳細\n- 日記データ確認: 完了 ([${dateStr}.md](${fileUrl}))\n- Notion 接続・疎通確認: 完了 (REST API直接実行)\n- プロパティ同期: 完了\n- ページ本文挿入: 完了\n`;
+  const content = `---
+title: Notion同期ログ (${dateStr})
+date: ${dateStr}
+synced_at: ${nowStr}
+status: success
+notion_url: ${notionUrl}
+---
+
+# Notion同期ログ (${dateStr})
+
+## 実行サマリー
+
+| 項目 | 内容 |
+| :-: | :-: |
+| 同期対象日 | ${dateStr} |
+| 実行日時 | ${nowStr} |
+| ステータス | 成功 (success) |
+| Notion ページ | [${dateStr}](${notionUrl}) |
+
+## 処理詳細
+- 日記データ確認: 完了 ([${dateStr}.md](${fileUrl}))
+- Notion 接続・疎通確認: 完了 (REST API直接実行)
+- プロパティ同期: 完了
+- ページ本文挿入: 完了
+`;
 
   const existingFiles = logsFolder.getFilesByName(logFileName);
   if (existingFiles.hasNext()) {
