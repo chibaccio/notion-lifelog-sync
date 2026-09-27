@@ -116,7 +116,7 @@ function getDatabaseSchema(databaseId) {
     muteHttpExceptions: true
   });
   const data = JSON.parse(res.getContentText());
-  const schema = { titleProp: '名前', dateProp: '日付', availableProps: [] };
+  const schema = { titleProp: 'ハイライト', dateProp: '日付', availableProps: [] };
 
   if (data.properties) {
     schema.availableProps = Object.keys(data.properties);
@@ -124,82 +124,103 @@ function getDatabaseSchema(databaseId) {
       if (prop.type === 'title') schema.titleProp = name;
       if (prop.type === 'date') schema.dateProp = name;
     }
+  } else {
+    // 取得失敗時のフォールバック定義
+    schema.availableProps = ['名前', 'ハイライト', '日付', '体重', '体脂肪率', 'カロリー', '塩分', '今日の一言'];
   }
   return schema;
 }
 
+/**
+ * 過去1ヶ月分の全表記ブレ・構造ブレに対応する柔軟な日記パーサー
+ */
 function parseDiaryMarkdown(mdText, dateStr, schema) {
-  mdText = mdText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  // 1. 改行コードおよびDocsエクスポートHTMLタグの正規化
+  let text = mdText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  text = text.replace(/<line-break\s*\/?>/gi, '\n');
+  
+  // 2. エスケープされたマークダウン記号（\_、\*、\-、\#、\| 等）のアンエスケープ
+  text = text.replace(/\\([_*\-#`~|])/g, '$1');
+  text = text.replace(/^\uFEFF/, ''); // BOM除去
 
-  // 1. Front Matterの柔軟な抽出（---、\---、BOM、または見出し前のキーバリュー群に対応）
+  // 3. ヘッダー / Front Matter 抽出（---, -----, または最初の見出し前の部分）
   let frontMatter = '';
-  let body = mdText;
+  let body = text;
 
-  const fmMatch = mdText.match(/^(?:\\?---|﻿\\?---)[ \t]*\n([\s\S]*?)\n(?:\\?---)[ \t]*/);
+  const fmMatch = text.match(/^(?:[\s\n]*[-]{3,})[ \t]*\n([\s\S]*?)\n(?:[-]{3,})[ \t]*/);
   if (fmMatch) {
     frontMatter = fmMatch[1];
-    body = mdText.substring(fmMatch[0].length).trim();
+    body = text.substring(fmMatch[0].length).trim();
   } else {
-    const headingMatch = mdText.match(/\n(?=#[^#])/);
+    const headingMatch = text.match(/\n(?=#[^#])/);
     if (headingMatch) {
-      frontMatter = mdText.substring(0, headingMatch.index).trim();
-      body = mdText.substring(headingMatch.index).trim();
+      frontMatter = text.substring(0, headingMatch.index).trim();
+      body = text.substring(headingMatch.index).trim();
     }
   }
 
-  // アンダースコアのエスケープ（\_ -> _）を正規化
-  const normalizedFm = frontMatter.replace(/\\_/g, '_');
-
-  // 数値プロパティの抽出
+  // 4. 各種数値プロパティの抽出（Front Matter -> 本文測定データ表 -> 概要テキストの多段フォールバック）
   let weight = null;
   let bodyFat = null;
   let calories = null;
   let salt = null;
 
-  const weightMatch = normalizedFm.match(/weight:\s*([0-9.]+)/);
-  if (weightMatch) weight = parseFloat(weightMatch[1]);
-
-  const bodyFatMatch = normalizedFm.match(/body_fat:\s*([0-9.]+)/);
-  if (bodyFatMatch) bodyFat = parseFloat(bodyFatMatch[1]);
-
-  const caloriesMatch = normalizedFm.match(/calories:\s*([0-9]+)/);
-  if (caloriesMatch) calories = parseInt(caloriesMatch[1], 10);
-
-  const saltMatch = normalizedFm.match(/salt:\s*([0-9.]+)/);
-  if (saltMatch) salt = parseFloat(saltMatch[1]);
-
-  // Front Matterに数値がない場合は本文の測定データ表からフォールバック抽出
+  // --- 体重 ---
+  const wm = frontMatter.match(/(?:weight|体重)\s*[:：|]\s*([0-9.]+)/i);
+  if (wm) weight = parseFloat(wm[1]);
   if (weight === null) {
-    const m = mdText.match(/\|\s*体重\s*\|\s*(?:約\s*)?([0-9.]+)\s*kg/);
+    const m = text.match(/\|\s*体重\s*\|\s*(?:約\s*)?([0-9.]+)\s*(?:kg|キロ)?/i) || text.match(/体重[：:]\s*(?:約\s*)?([0-9.]+)\s*(?:kg|キロ)?/i);
     if (m) weight = parseFloat(m[1]);
   }
+
+  // --- 体脂肪率 ---
+  const bfm = frontMatter.match(/(?:body_fat|bodyfat|体脂肪率|体脂肪)\s*[:：|]\s*([0-9.]+)/i);
+  if (bfm) bodyFat = parseFloat(bfm[1]);
   if (bodyFat === null) {
-    const m = mdText.match(/\|\s*体脂肪率\s*\|\s*(?:約\s*)?([0-9.]+)\s*%/);
+    const m = text.match(/\|\s*体脂肪率\s*\|\s*(?:約\s*)?([0-9.]+)\s*%/i) || text.match(/体脂肪率[：:]\s*(?:約\s*)?([0-9.]+)\s*%/i);
     if (m) bodyFat = parseFloat(m[1]);
   }
+
+  // --- カロリー ---
+  const cm = frontMatter.match(/(?:calories|calorie|cal|カロリー|総カロリー)\s*[:：|]\s*([0-9,]+)/i);
+  if (cm) calories = parseInt(cm[1].replace(/,/g, ''), 10);
   if (calories === null) {
-    const m = mdText.match(/\|\s*カロリー合計\s*\|\s*(?:約\s*)?([0-9,]+)\s*kcal/);
+    const m = text.match(/\|\s*(?:カロリー合計|総カロリー|カロリー|摂取カロリー|エネルギー)\s*\|\s*(?:約\s*)?([0-9,]+)\s*(?:kcal)?/i) ||
+              text.match(/(?:カロリー合計|総カロリー|総摂取カロリー|総摂取エネルギー)[^0-9\n]*約?\s*([0-9,]+)\s*kcal/i);
     if (m) calories = parseInt(m[1].replace(/,/g, ''), 10);
   }
+
+  // --- 塩分 ---
+  const sm = frontMatter.match(/(?:salt|塩分|食塩相当量)\s*[:：|]\s*([0-9.]+)/i);
+  if (sm) salt = parseFloat(sm[1]);
   if (salt === null) {
-    const m = mdText.match(/\|\s*食塩相当量\s*\|\s*(?:約\s*)?([0-9.]+)\s*g/);
+    const m = text.match(/\|\s*(?:食塩相当量|塩分|食塩)\s*\|\s*(?:約\s*)?([0-9.]+)\s*g/i) ||
+              text.match(/(?:食塩相当量|塩分)[^0-9\n]*約?\s*([0-9.]+)\s*g/i);
     if (m) salt = parseFloat(m[1]);
   }
 
-  // 2. 今日の一言（3行サマリー：H1〜H3、**太字**装飾付きに対応）
+  // 5. 今日の一言（3行サマリー / 3行要約 / 今日のまとめ：見出しレベルや太字装飾を完全吸収）
   let comment = '';
-  const summaryBlockMatch = body.match(/#{1,3}\s*\**3行サマリー\**([\s\S]*?)(?=\n#{1,3}\s*|$)/i);
-  if (summaryBlockMatch) {
-    const lines = summaryBlockMatch[1].split('\n')
-      .map(l => l.trim())
-      .filter(l => /^[-*・]/.test(l))
-      .map(l => l.replace(/^[-*・]\s*/, '').replace(/\[(.*?)\]\(.*?\)/g, '$1').replace(/\*\*(.*?)\*\*/g, '$1'));
+  const summaryMatch = text.match(/(?:^|\n)#{1,4}\s*(?:\*\*)?(?:3行サマリー|3行要約|サマリー|今日のサマリー|本日のまとめ|まとめ)(?:\*\*)?([\s\S]*?)(?=\n#{1,4}\s*[^\n]+|\Z)/i);
+  if (summaryMatch) {
+    const lines = [];
+    const rawLines = summaryMatch[1].split('\n');
+    for (let i = 0; i < rawLines.length; i++) {
+      const line = rawLines[i].trim();
+      // 箇条書き（-, *, ・, +, 1., ①など）にマッチ
+      if (/^(?:[-*・+]|[0-9]+[.)]|[①-⑩])\s*/.test(line)) {
+        let clean = line.replace(/^(?:[-*・+]|[0-9]+[.)]|[①-⑩])\s*/, '');
+        clean = clean.replace(/\[(.*?)\]\(.*?\)/g, '$1');
+        clean = clean.replace(/\*\*(.*?)\*\*/g, '$1');
+        if (clean) lines.append ? lines.push(clean) : lines.push(clean);
+      }
+    }
     if (lines.length > 0) {
       comment = lines.join('\n');
     }
   }
 
-  // 3. タイトル・日付設定
+  // 6. タイトル・日付設定
   const d = new Date(dateStr.replace(/-/g, '/'));
   const days = ['日', '月', '火', '水', '木', '金', '土'];
   const formattedTitle = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日（${days[d.getDay()]}）`;
@@ -265,37 +286,37 @@ function convertMarkdownToBlocks(bodyText) {
     const line = lines[i].trim();
     if (!line) continue;
 
-    if (line.startsWith('### ')) {
+    if (/^###\s+/.test(line)) {
       blocks.push({
         object: 'block',
         type: 'heading_3',
-        heading_3: { rich_text: parseRichText(line.replace(/^###\s*/, '')) }
+        heading_3: { rich_text: parseRichText(line.replace(/^###\s+/, '').replace(/^\*\*|\*\*$/g, '')) }
       });
-    } else if (line.startsWith('## ')) {
+    } else if (/^##\s+/.test(line)) {
       blocks.push({
         object: 'block',
         type: 'heading_2',
-        heading_2: { rich_text: parseRichText(line.replace(/^##\s*/, '')) }
+        heading_2: { rich_text: parseRichText(line.replace(/^##\s+/, '').replace(/^\*\*|\*\*$/g, '')) }
       });
-    } else if (line.startsWith('# ')) {
+    } else if (/^#\s+/.test(line)) {
       blocks.push({
         object: 'block',
         type: 'heading_1',
-        heading_1: { rich_text: parseRichText(line.replace(/^#\s*/, '')) }
+        heading_1: { rich_text: parseRichText(line.replace(/^#\s+/, '').replace(/^\*\*|\*\*$/g, '')) }
       });
-    } else if (line.startsWith('> ')) {
+    } else if (/^>\s*/.test(line)) {
       blocks.push({
         object: 'block',
         type: 'quote',
         quote: { rich_text: parseRichText(line.replace(/^>\s*/, '')) }
       });
-    } else if (/^[-*・]\s+/.test(line)) {
+    } else if (/^(?:[-*・+]|[0-9]+[.)])\s+/.test(line)) {
       blocks.push({
         object: 'block',
         type: 'bulleted_list_item',
-        bulleted_list_item: { rich_text: parseRichText(line.replace(/^[-*・]\s+/, '')) }
+        bulleted_list_item: { rich_text: parseRichText(line.replace(/^(?:[-*・+]|[0-9]+[.)])\s+/, '')) }
       });
-    } else if (!line.startsWith('|') && !line.startsWith('---')) {
+    } else if (!line.startsWith('|') && !line.startsWith('---') && !line.startsWith('-----')) {
       blocks.push({
         object: 'block',
         type: 'paragraph',
