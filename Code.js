@@ -174,7 +174,7 @@ function parseDiaryMarkdown(mdText, dateStr, schema) {
   text = text.replace(/<line-break\s*\/?>/gi, '\n');
   
   // 2. エスケープされたマークダウン記号（\_、\*、\-、\#、\| 等）のアンエスケープ
-  text = text.replace(/\\([_*\\-#`~|])/g, '$1');
+  text = text.replace(/\\([_*#`~|-])/g, '$1');
   text = text.replace(/^\uFEFF/, ''); // BOM除去
 
   // 3. ヘッダー / Front Matter 抽出（---, -----, または最初の見出し前の部分）
