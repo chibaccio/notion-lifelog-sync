@@ -1,0 +1,6 @@
+# clasp / Google Apps Script
+.clasprc.json
+
+# Node / Mac
+node_modules/
+.DS_Store
